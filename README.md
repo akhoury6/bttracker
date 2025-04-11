@@ -13,12 +13,9 @@ It can be run side-by-sde with an emulator too, to view and keep track of your b
 The file `trophies.zlib` contains the data from the FAQ, as well as the record of which trophies have been completed.
 
 ```shell
-git clone --depth=1
-unzip bttracker.zip
-cd bttracker
-rm -rf .git
-chmod u+w trophies.zdata
-chmod u+x bt
+git clone --depth=1 https://github.com/akhoury6/bttracker.git
+cd bttracker; rm -rf .git
+chmod u+w trophies.zdata; chmod u+x bt
 ./bt
 ```
 
