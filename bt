@@ -1,0 +1,398 @@
+#!/usr/bin/env ruby
+
+require 'bundler/inline'
+gemfile do
+	source 'https://rubygems.org'
+	ruby '>= 3.3'
+	gem 'colorize', '~> 1.1', require: false
+	gem 'base64', require: true
+end
+begin
+	require 'colorize'
+	$colorize = true
+rescue LoadError
+	$colorize = false
+end
+
+%w(zlib base64).each { |lib| require lib }
+String.instance_eval { define_method(:compress) { Base64.encode64(Zlib::Deflate.deflate(self)) } }
+String.instance_eval { define_method(:decompress) { Zlib::Inflate.inflate(Base64.decode64(self)) } }
+
+$datafile = File.join(__dir__, 'trophies.zdata')
+
+class Command
+	def self.inherited klass
+		return unless self.name == 'Command'
+		@subklasses ||= []
+		@subklasses.push(klass)
+	end
+
+	def self.getcmd cmdstr
+		@subklasses.select { |klass| klass.name.downcase == cmdstr.downcase }.first
+	end
+
+	def self.help cmd = nil
+		puts 'Commands:'
+		list = cmd.nil? ? @subklasses :
+					 cmd.is_a?(Command) ? [cmd.class] :
+					 cmd.is_a?(String) ? [self.getcmd(cmd)] : []
+		list.each { |command| puts sprintf('  %-32s   %s' % command.describe) }
+	end
+
+	def initialize
+		@data = File.read($datafile).decompress.lines
+	end
+
+	def parseopts
+		return true
+	end
+
+	def postrun
+		puts "Complete: " +
+				("%03d" % self.completed_count).colorize(:green) +
+				"                                                Incomplete: " +
+				("%03d" % (300 - self.completed_count)).colorize(:red)
+	end
+
+	private
+
+	def commit!
+		File.write($datafile, @data.join.compress)
+	end
+
+	def write_raw filename
+		File.write(filename, @data.join)
+	end
+
+	def btlist
+		@data[158..457]
+	end
+
+	def btsections
+		i = 504
+		sections = []
+		section = Hash.new
+		while i >= 0 && i < @data.length
+			if section[:start].nil? && section[:end].nil? && @data[i].chomp.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}[\w\s]+\[[A-Z0-9]+\]$/)
+				section[:start] = i
+			elsif !section[:start].nil? && section[:end].nil? && bt = @data[i].chomp.match(/\(#(\d{3})\)\*?$/)
+				section[:bts] ||= []
+				section[:bts].push(bt[1].to_i)
+			elsif !section[:start].nil? && section[:end].nil? && @data[i].chomp.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}[\w\s]+\[[A-Z0-9]+\]$/)
+				section[:end] = i - 1
+				section[:end] -= 1 while @data[section[:end]].chomp.empty?
+				sections.push(section)
+				section = Hash.new
+				i -= 1
+			end
+			i += 1
+		end
+		sections
+	end
+
+	def completed_count
+		self.btlist.select { |i| i.chomp.end_with?('*') }.count
+	end
+
+	def colorize_list_entry entry
+		parts = entry.match(/^(\d{0,3})(\.)(\s{1,3})([^\.].+[^\.])(\.*)( )(\()(#\d{3})(\))(\*?)(\n?)$/).to_a[1..-1]
+		parts[0] = parts[0].colorize(:blue)
+		[3, 4, 6, 7, 8].each { |i| parts[i] = parts[9] == '*' ? parts[i].colorize(:green) : parts[i].colorize(:red) }
+		parts.join
+	end
+
+	def colorize_section sectiontext
+		data = sectiontext
+		data.each_index do |i|
+			if data[i].chomp.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}[\w\s]+\[[A-Z0-9]+\]$/)
+				data[i] = data[i].colorize(:blue)
+				data[i + 1] = data[i + 1].colorize(:blue)
+			end
+			if bt = data[i].match(/^(.{11})(\s:|\s\s)(\s)([^\(]*)(\()(#\d{3})(\))(\*?)(\n?)$/)
+				parts = bt.to_a[1..-1]
+				# parts[0] = parts[0].colorize(:blue)
+				[3, 4, 5, 6].each { |i| parts[i] = parts[7] == '*' ? parts[i].colorize(:green) : parts[i].colorize(:red) }
+				data[i] = parts.join
+			end
+			if bt = data[i].match(/^(.{11})(\s:)(.*)(\n?)$/)
+				parts = bt.to_a[1..-1]
+				parts[0] = parts[0].colorize(:blue)
+				data[i] = parts.join
+			end
+		end
+		data
+	end
+
+	def colorize_faq text
+		data = text
+		data.each_index do |i|
+			if faq = data[i].match(/^(Q.)(\s)([^\[\n]+)(\[FAQ\d{3}\])?(\n?)$/)
+				parts = faq.to_a[1..-1]
+				parts[0] = parts[0].colorize(:blue)
+				parts[2] = parts[2].colorize(:magenta)
+				parts[3] = parts[3].colorize(:blue) unless parts[3].nil?
+				data[i] = parts.join
+			elsif faq = data[i].match(/^(A.)(\s.*)/)
+				data[i] = faq[1].colorize(:blue) + faq[2]
+			end
+		end
+		data
+	end
+
+	def getnum
+		return false unless ARGV.length >= 2
+		num = ARGV[1].match(/^#?(\d{1,3})[^\d]?/)
+		return false unless num && num[1].sub(/^0*/, '') == num[1].to_i.to_s
+		@num = "%03d" % num[1].to_i
+		return true
+	end
+
+	def getnums
+		return false unless ARGV.length >= 2
+		@nums = ARGV[1..-1].map { |arg| arg.match(/^#?(\d{1,3})$/) }.reject(&:nil?).map{ |arg| arg.to_a[1].to_i }
+		return !@nums.empty?
+	end
+
+end
+
+
+class List < Command
+	def parseopts
+		@all = ARGV.length > 1 && ARGV[1] == 'all'
+		self.getnums
+		return true
+	end
+
+	def run
+		list = (@all) ? self.btlist :
+						(!@nums.nil?) ? self.btlist.select.with_index { |bt, idx| @nums.include?(idx + 1) } :
+						self.btlist.reject { |bt| bt.chomp.end_with?('*') }
+		# print $colorize ? @data[149].colorize(:blue) : @data[149]
+		print $colorize ? list.map { |bt| colorize_list_entry(bt) }.join : list.join
+	end
+
+	def self.describe
+		["list (   | all | num1 num2 ...)", "lists unfinished BTs, or all, or specified BTs"]
+	end
+end
+
+class Find < Command
+	def parseopts
+		return false unless ARGV.length >= 1
+		@searches = ARGV[1..-1].map(&:downcase).join(' ').split('|').map { |s| s.strip.split(' ') }
+		return true
+	end
+
+	def run
+		@searches.each do |terms|
+			list = self.btlist.select { |bt| terms.map { |term| bt.downcase.include?(term) }.reduce(&:&) }
+			puts $colorize ? list.map { |bt| colorize_list_entry(bt) }.join : list.join
+			print "\n"
+			values = list.map.with_index { |bt, i| bt.match(/\(#(\d{3})\)\*?/)[1].to_i }
+			self.btsections.select { |sec| sec[:bts].map { |bt| values.include?(bt) }.reduce(&:|) }.each do |sec|
+				section = @data[sec[:start]..sec[:end]]
+				puts ($colorize ? colorize_section(section) : section).join
+				puts ''
+			end
+		end
+	end
+
+	def self.describe
+		["find term1 term2 ...", "find BTs that contain all given terms. Use '|' for multiple searches"]
+	end
+end
+
+class Show < Command
+	def parseopts
+		@incomplete = (ARGV[1] == 'incomplete')
+		return @incomplete || self.getnums
+	end
+
+	def run
+		list = self.btlist.select.with_index { |bt, i| @nums.include?(i + 1) }
+		puts $colorize ? list.map { |bt| colorize_list_entry(bt) }.join : list.join
+		print "\n"
+		filter = @incomplete ? self.btlist.map.with_index { |bt, i| bt.chomp.end_with?('*') ? nil : i + 1 }.reject(&:nil?) : @nums
+		self.btsections.select { |sec| sec[:bts].map{ |bt| filter.include?(bt) }.reduce(&:|) }.each do |section|
+			section = @data[section[:start]..section[:end]]
+			puts ($colorize ? colorize_section(section) : section).join
+			puts ''
+		end
+	end
+
+	def self.describe
+		["show (num1 num2 ... | incomplete)", "show how to accomplish specified BTs, or all unfinished ones"]
+	end
+end
+
+class Mark < Command
+	def parseopts
+		self.getnums
+	end
+
+	def run
+		changes_made = false
+		@nums.each do |num|
+			@data.each_index do |i|
+				search_regex = /\(#(#{"%03d" % num})\)(\*?)/
+				if bt = @data[i].match(search_regex)
+					if bt[2] == '*'
+						puts "BT ##{bt[1]} is already marked complete."
+						break
+					end
+					@data[i] = @data[i].sub(search_regex, "(##{bt[1]})*")
+					puts ($colorize ? self.colorize_list_entry(@data[i]) : @data[i]) if @data[i].start_with?(bt[1].to_i.to_s)
+					changes_made = true
+				end
+			end
+		end
+		if changes_made
+			self.commit!
+		else
+			puts "No changes made"
+		end
+	end
+
+	def self.describe
+		["mark num1 num2 ...", "mark specified BTs as complete"]
+	end
+end
+
+class Unmark < Command
+	def parseopts
+		self.getnums
+	end
+
+	def run
+		changes_made = false
+		@nums.each do |num|
+			@data.each_index do |i|
+				search_regex = /\(#(#{"%03d" % num})\)(\*?)/
+				if bt = @data[i].match(search_regex)
+					if bt[2] != '*'
+						puts "BT ##{bt[1]} is already marked incomplete."
+						break
+					end
+					@data[i] = @data[i].sub(search_regex, "(##{bt[1]})")
+					puts ($colorize ? self.colorize_list_entry(@data[i]) : @data[i]) if @data[i].start_with?(bt[1].to_i.to_s)
+					changes_made = true
+				end
+			end
+		end
+		if changes_made
+			self.commit!
+		else
+			puts "No changes made"
+		end
+	end
+
+	def self.describe
+		["unmark num1 num2 ...", "mark specified BTs as incomplete"]
+	end
+end
+
+class Rewards < Command
+	def run
+		rewards = @data[124..144]
+		first_not_available = true
+		rewards.each_index do |i|
+			if rw = rewards[i].match(/^(\s{4})(\d{1,3})([^:]+)(:)(.*)(\n?)$/)
+				parts = rw.to_a[1..-1]
+				count = parts[1].to_i
+				if count <= self.completed_count
+					parts[0] = '  * '
+				elsif first_not_available
+					parts[0] = '-%2d ' % (count - self.completed_count)
+					first_not_available = false
+				end
+				(1..4).each { |i| parts[i] = parts[i].colorize(count <= self.completed_count ? :green : :red) } if $colorize
+				rewards[i] = parts.join
+			end
+		end
+		puts rewards.join
+	end
+
+	def self.describe
+		["rewards", "shows rewards"]
+	end
+end
+
+class Faq < Command
+	def parseopts
+		@section = ARGV[1]
+		return true
+	end
+
+	def run
+		if @section == '1'
+			puts $colorize ? self.colorize_faq(@data[2920..2969]) : @data[2920..2969]
+		elsif @section == '2'
+			puts $colorize ? self.colorize_faq(@data[2971..3052]) : @data[2971..3052]
+		elsif @section == '3'
+			puts $colorize ? self.colorize_faq(@data[3054..3210]) : @data[3054..3210]
+		else
+			puts $colorize ? self.colorize_faq(@data[2916..3210]) : @data[2916..3210]
+		end
+	end
+
+	def self.describe
+		["faq (_|1|2|3)", "show a section of the faq"]
+	end
+end
+
+
+class Export < Command
+	def run
+		self.write_raw('SO3 Trophies.txt')
+	end
+
+	def postrun
+		puts "Exported data to 'SO3 Trophies.txt'"
+	end
+
+	def self.describe
+		["export", "exports data to a text file"]
+	end
+end
+
+class Clear < Command
+	def run
+		confirmation_phrase = 'clear all battle trophy data'
+		print "WARNING! ".colorize(:yellow)
+		print "This is a destructive operation. To confirm, please type the following phrase:\n"
+		print "    #{confirmation_phrase}\n    "
+		@confirmed = ($stdin.gets.chomp == confirmation_phrase)
+		exit(0) unless @confirmed
+
+		@data.each_index do |i|
+			@data[i] = @data[i].sub(/\(#(\d{3})\)\*?$/, '(#\1)')
+		end
+
+		require 'fileutils'
+		backupfile = File.join(File.dirname($datafile), 'trophies.backup')
+		FileUtils.cp($datafile, backupfile)
+
+		self.commit!
+		puts "All data cleared. A backup has been created at #{backupfile}"
+	end
+
+	def self.describe
+		['clear', 'clear all completion data']
+	end
+end
+
+#########
+#########
+if ARGV.empty? || Command.getcmd(ARGV[0]).nil?
+	Command.help
+	exit(0)
+end
+
+cmd = Command.getcmd(ARGV[0]).new
+if !cmd.parseopts
+	puts "Usage Incorrect"
+	Command.help(cmd)
+	exit(0)
+end
+cmd.run
+cmd.postrun
