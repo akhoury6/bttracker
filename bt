@@ -184,16 +184,20 @@ class Find < Command
 	end
 
 	def run
+		all_list_entries = []
+		all_sections = []
 		@searches.each do |terms|
 			list = self.btlist.select { |bt| terms.map { |term| bt.downcase.include?(term) }.reduce(&:&) }
-			puts $colorize ? list.map { |bt| colorize_list_entry(bt) }.join : list.join
-			print "\n"
+			all_list_entries.concat(list)
 			values = list.map.with_index { |bt, i| bt.match(/\(#(\d{3})\)\*?/)[1].to_i }
-			self.btsections.select { |sec| sec[:bts].map { |bt| values.include?(bt) }.reduce(&:|) }.each do |sec|
-				section = @data[sec[:start]..sec[:end]]
-				puts ($colorize ? colorize_section(section) : section).join
-				puts ''
-			end
+			all_sections.concat(self.btsections.select { |sec| sec[:bts].map { |bt| values.include?(bt) }.reduce(&:|) })
+		end
+		puts $colorize ? all_list_entries.uniq.sort.map { |bt| colorize_list_entry(bt) }.join : all_list_entries.uniq.sort.join
+		print "\n"
+		all_sections.uniq.sort_by { |sec| sec[:start] }.each do |sec|
+			section = @data[sec[:start]..sec[:end]]
+			puts ($colorize ? colorize_section(section) : section).join
+			puts ''
 		end
 	end
 
@@ -294,15 +298,14 @@ end
 class Rewards < Command
 	def run
 		rewards = @data[124..144]
-		first_not_available = true
 		rewards.each_index do |i|
 			if rw = rewards[i].match(/^(\s{4})(\d{1,3})([^:]+)(:)(.*)(\n?)$/)
 				parts = rw.to_a[1..-1]
 				count = parts[1].to_i
 				if count <= self.completed_count
 					parts[0] = '  * '
-				elsif first_not_available
-					parts[0] = '-%2d ' % (count - self.completed_count)
+				else
+					parts[0] = '%3d ' % (count - self.completed_count)
 					first_not_available = false
 				end
 				(1..4).each { |i| parts[i] = parts[i].colorize(count <= self.completed_count ? :green : :red) } if $colorize
